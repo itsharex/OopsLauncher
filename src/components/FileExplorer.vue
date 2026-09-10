@@ -100,7 +100,7 @@
       <div v-if="viewMode === 'grid' && files.length > 0" class="file-grid-viewport" :style="{ height: virtualGrid.totalHeight + 'px' }">
         <div class="file-grid" :style="{ transform: `translateY(${virtualGrid.startRow * GRID_ITEM_HEIGHT}px)` }">
           <el-tooltip v-for="file in virtualGrid.items" :key="file.path" effect="light" placement="right"
-            :show-after="500">
+            :show-after="500" :disabled="isRenaming(file)">
             <template #content>
               <div class="file-tooltip">
                 <p><strong>名称:</strong> {{ file.name }}</p>
@@ -125,7 +125,7 @@
               'is-selected': selectedFile?.path === file.path,
               'is-reparse-point': file.isReparsePoint,
               'is-highlighted': explorerHighlightPath === file.path
-            }" draggable="true" @dragstart="handleFileDragStart($event, file)" @click.stop="selectedFile = file; hideContextMenu()" @dblclick.stop="handleItemClick(file)"
+            }" :draggable="!isRenaming(file)" @dragstart="handleFileDragStart($event, file)" @click.stop="selectedFile = file; hideContextMenu()" @dblclick.stop="handleItemClick(file)"
               @contextmenu.stop.prevent="handleContextMenu($event, file)">
               <div class="file-icon-wrapper">
                 <template v-if="file.icon">
@@ -137,7 +137,10 @@
                 <div v-if="file.isReparsePoint" class="reparse-point-badge" title="系统联接点">🔗</div>
               </div>
               <div class="file-info">
-                <span class="file-name" :title="file.name">{{ file.name }}</span>
+                <input v-if="isRenaming(file)" :ref="setRenameInputRef" v-model="renamingItem.name" class="rename-input"
+                  @click.stop @dblclick.stop @keyup.enter="confirmRename" @keyup.escape="cancelRename"
+                  @blur="confirmRename" />
+                <span v-else class="file-name" :title="file.name">{{ file.name }}</span>
               </div>
             </div>
           </el-tooltip>
@@ -175,7 +178,7 @@
             'is-selected': selectedFile?.path === file.path,
             'is-reparse-point': file.isReparsePoint,
             'is-highlighted': explorerHighlightPath === file.path
-          }" draggable="true" @dragstart="handleFileDragStart($event, file)" @click.stop="selectedFile = file; hideContextMenu()" @dblclick.stop="handleItemClick(file)"
+          }" :draggable="!isRenaming(file)" @dragstart="handleFileDragStart($event, file)" @click.stop="selectedFile = file; hideContextMenu()" @dblclick.stop="handleItemClick(file)"
             @contextmenu.stop.prevent="handleContextMenu($event, file)">
             <div class="col-name">
               <template v-if="file.icon">
@@ -184,7 +187,10 @@
               <template v-else>
                 <span class="file-list-icon-placeholder">{{ file.type === 'directory' ? '📁' : '📄' }}</span>
               </template>
-              <span class="file-name" :title="file.name">
+              <input v-if="isRenaming(file)" :ref="setRenameInputRef" v-model="renamingItem.name" class="rename-input"
+                @click.stop @dblclick.stop @keyup.enter="confirmRename" @keyup.escape="cancelRename"
+                @blur="confirmRename" />
+              <span v-else class="file-name" :title="file.name">
                 {{ file.name }}
                 <el-tag v-if="file.isReparsePoint" size="small" type="info" class="reparse-tag">联接点</el-tag>
               </span>
@@ -236,6 +242,10 @@
           </li>
           <li class="context-menu-item" @click="handleOpenWith(explorerMenu.file)">
             打开方式
+          </li>
+          <li class="context-menu-item" @click="startRename(explorerMenu.file)">
+            重命名
+            <span class="menu-shortcut">F2</span>
           </li>
           <template v-if="explorerMenu.file.type === 'directory'">
             <li class="context-menu-divider"></li>
@@ -579,6 +589,17 @@ let highlightTimeout = null;
 // --- 新建文件/文件夹状态 ---
 const creatingItem = ref({ active: false, type: '', name: '', parentDir: '' });
 const creatingInputRef = ref(null);
+
+// --- 重命名状态 ---
+const renamingItem = ref({ active: false, path: '', name: '', originalName: '' });
+// 网格与列表共用同一个输入框引用（同一时刻只会渲染一个）
+let renameInputEl = null;
+
+const setRenameInputRef = (el) => {
+  if (el) renameInputEl = el;
+};
+
+const isRenaming = (file) => renamingItem.value.active && renamingItem.value.path === file.path;
 
 const isMenuOnRight = computed(() => {
   return explorerMenu.value.x > window.innerWidth / 2;
@@ -1071,6 +1092,76 @@ const cancelCreate = () => {
   creatingItem.value.active = false;
 };
 
+// --- 重命名 ---
+const startRename = (file) => {
+  if (!file?.path) return;
+
+  hideContextMenu();
+  cancelCreate();
+  selectedFile.value = file;
+  renamingItem.value = {
+    active: true,
+    path: file.path,
+    name: file.name,
+    originalName: file.name,
+  };
+
+  nextTick(() => {
+    if (!renameInputEl) return;
+    renameInputEl.focus();
+    // 默认只选中主文件名，保留扩展名
+    const dotIndex = file.type === 'directory' ? -1 : file.name.lastIndexOf('.');
+    if (dotIndex > 0) {
+      renameInputEl.setSelectionRange(0, dotIndex);
+    } else {
+      renameInputEl.select();
+    }
+  });
+};
+
+const cancelRename = () => {
+  renamingItem.value.active = false;
+};
+
+const confirmRename = async () => {
+  if (!renamingItem.value.active) return;
+
+  const { path, name, originalName } = renamingItem.value;
+  renamingItem.value.active = false; // 先关闭，避免 blur 重复提交
+
+  const newName = name.trim();
+  if (!newName || newName === originalName) return;
+
+  const preservedScrollTop = explorerContentRef.value?.scrollTop ?? scrollTop.value;
+  try {
+    const newPath = await invoke('rename_path', { path, newName });
+    await loadDirectory(currentPath.value, { resetScroll: false });
+    await nextTick();
+    if (explorerContentRef.value) {
+      explorerContentRef.value.scrollTop = preservedScrollTop;
+      scrollTop.value = explorerContentRef.value.scrollTop;
+    }
+    selectedFile.value = files.value.find(f => f.path === newPath) || null;
+    ElMessage.success('已重命名');
+  } catch (error) {
+    console.error('Failed to rename:', error);
+    ElMessage.error(`重命名失败: ${error}`);
+  }
+};
+
+// F2：重命名当前选中项
+const handleKeydown = (e) => {
+  if (e.key !== 'F2') return;
+
+  const target = e.target;
+  if (target?.tagName === 'INPUT' || target?.tagName === 'TEXTAREA' || target?.isContentEditable) return;
+  if (isEditingPath.value || creatingItem.value.active || renamingItem.value.active) return;
+  if (!selectedFile.value) return;
+
+  e.preventDefault();
+  startRename(selectedFile.value);
+};
+
 const handleContextMenu = async (event, file) => {
   selectedFile.value = file;
   explorerMenu.value = {
@@ -1149,6 +1240,7 @@ onMounted(() => {
   document.addEventListener('mousedown', handleOutsideMousedown);
   window.addEventListener('click', hideContextMenu);
   window.addEventListener('resize', updateContainerHeight);
+  window.addEventListener('keydown', handleKeydown);
   updateContainerHeight();
   registerFolderSizeTaskListeners();
   if (pathCrumbsRef.value && 'ResizeObserver' in window) {
@@ -1162,6 +1254,7 @@ onUnmounted(() => {
   document.removeEventListener('mousedown', handleOutsideMousedown);
   window.removeEventListener('click', hideContextMenu);
   window.removeEventListener('resize', updateContainerHeight);
+  window.removeEventListener('keydown', handleKeydown);
   if (removeFolderSizeItemListener) removeFolderSizeItemListener();
   if (removeFolderSizeCompleteListener) removeFolderSizeCompleteListener();
   if (crumbsObserver) crumbsObserver.disconnect();
@@ -1437,6 +1530,27 @@ watch(currentPath, () => nextTick(updatePathOverflow));
   line-height: 1.4;
 }
 
+/* 重命名内联输入框 */
+.rename-input {
+  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid #409eff;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.4;
+  color: #606266;
+  background: #fff;
+  outline: none;
+}
+
+.rename-input:focus {
+  box-shadow: 0 0 0 2px rgba(64, 158, 255, 0.2);
+}
+
 /* 右键菜单基础样式 */
 .explorer-context-menu {
   position: fixed;
@@ -1486,6 +1600,13 @@ watch(currentPath, () => nextTick(updatePathOverflow));
 
 .context-menu-item.delete:hover {
   background-color: #fef0f0;
+}
+
+.menu-shortcut {
+  margin-left: auto;
+  padding-left: 16px;
+  font-size: 11px;
+  color: #c0c4cc;
 }
 
 .context-menu-divider {

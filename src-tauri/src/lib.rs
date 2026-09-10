@@ -59,6 +59,7 @@ pub fn run() {
             commands::file::scan_start_menu_programs,
             commands::file::create_file,
             commands::file::create_folder,
+            commands::file::rename_path,
             commands::file::add_favorite,
             commands::file::remove_favorite,
             commands::file::get_favorites,

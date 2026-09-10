@@ -993,6 +993,76 @@ pub fn create_folder(parent_dir: String, folder_name: String) -> Result<String, 
     Ok(folder_path.to_string_lossy().to_string())
 }
 
+/// Windows 文件名中不允许出现的字符
+const INVALID_NAME_CHARS: [char; 9] = ['<', '>', ':', '"', '/', '\\', '|', '?', '*'];
+
+/// Windows 保留设备名（不区分大小写，含扩展名时同样无效）
+const RESERVED_DEVICE_NAMES: [&str; 22] = [
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// 校验重命名后的名称。纯函数，便于单测。
+fn validate_new_name(name: &str) -> Result<(), AppError> {
+    if name.is_empty() {
+        return Err(AppError::Other("名称不能为空".into()));
+    }
+
+    if let Some(bad) = name
+        .chars()
+        .find(|c| INVALID_NAME_CHARS.contains(c) || (*c as u32) < 32)
+    {
+        return Err(AppError::Other(format!("名称不能包含字符「{}」", bad)));
+    }
+
+    // Windows 会静默丢弃结尾的点和空格，导致实际名称与输入不一致，直接拒绝
+    if name.ends_with('.') || name.ends_with(' ') {
+        return Err(AppError::Other("名称不能以点或空格结尾".into()));
+    }
+
+    let stem = name.split('.').next().unwrap_or(name).to_uppercase();
+    if RESERVED_DEVICE_NAMES.contains(&stem.as_str()) {
+        return Err(AppError::Other(format!("「{}」是系统保留名称", stem)));
+    }
+
+    Ok(())
+}
+
+/// 重命名文件或文件夹（同目录内改名），返回新路径。
+pub fn rename_path(path: String, new_name: String) -> Result<String, AppError> {
+    let new_name = new_name.trim();
+    validate_new_name(new_name)?;
+
+    let src_path = Path::new(&path);
+    if !src_path.exists() {
+        return Err(AppError::NotFound(format!(
+            "Path does not exist: {}",
+            path
+        )));
+    }
+
+    // 根目录（如 C:\）没有父目录，无法重命名
+    let parent = src_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .ok_or_else(|| AppError::Other("无法重命名该位置".into()))?;
+
+    let dest_path = parent.join(new_name);
+    let same_path = src_path
+        .to_string_lossy()
+        .eq_ignore_ascii_case(&dest_path.to_string_lossy());
+
+    // 仅大小写不同时同名文件也会 exists()，允许这类改名
+    if dest_path.exists() && !same_path {
+        return Err(AppError::Other(format!("「{}」已存在", new_name)));
+    }
+
+    fs::rename(src_path, &dest_path)
+        .map_err(|e| AppError::Other(format!("重命名失败: {}", e)))?;
+
+    Ok(dest_path.to_string_lossy().to_string())
+}
+
 pub fn search_windows_index(query: String) -> Result<Vec<FileInfo>, AppError> {
     let mut results = Vec::new();
 
@@ -1145,4 +1215,76 @@ pub fn is_favorite(app: &tauri::AppHandle, path: String) -> Result<bool, AppErro
         )
         .map_err(|e| AppError::Database(e.to_string()))?;
     Ok(count > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn unique_temp_dir(tag: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "oopslauncher_rename_test_{}_{}",
+            tag,
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_validate_new_name_accepts_common_names() {
+        assert!(validate_new_name("报告 v2.txt").is_ok());
+        assert!(validate_new_name("folder.name").is_ok());
+        assert!(validate_new_name("新建文件夹 (2)").is_ok());
+    }
+
+    #[test]
+    fn test_validate_new_name_rejects_invalid() {
+        assert!(validate_new_name("").is_err());
+        assert!(validate_new_name("a/b.txt").is_err());
+        assert!(validate_new_name("a\\b.txt").is_err());
+        assert!(validate_new_name("a:b.txt").is_err());
+        assert!(validate_new_name("a?b.txt").is_err());
+        assert!(validate_new_name("trailing.").is_err());
+        assert!(validate_new_name("trailing ").is_err());
+        assert!(validate_new_name("con.txt").is_err());
+        assert!(validate_new_name("COM1").is_err());
+    }
+
+    #[test]
+    fn test_rename_path_renames_file_and_returns_new_path() {
+        let dir = unique_temp_dir("file");
+        let src = dir.join("old.txt");
+        fs::write(&src, b"hello").unwrap();
+
+        let new_path = rename_path(src.to_string_lossy().to_string(), "new.txt".into()).unwrap();
+
+        assert!(!src.exists());
+        assert_eq!(fs::read_to_string(&new_path).unwrap(), "hello");
+        assert_eq!(Path::new(&new_path).file_name().unwrap(), "new.txt");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_rename_path_rejects_existing_target_and_missing_source() {
+        let dir = unique_temp_dir("conflict");
+        let src = dir.join("a.txt");
+        let occupied = dir.join("b.txt");
+        fs::write(&src, b"a").unwrap();
+        fs::write(&occupied, b"b").unwrap();
+
+        assert!(rename_path(src.to_string_lossy().to_string(), "b.txt".into()).is_err());
+        assert!(rename_path(src.to_string_lossy().to_string(), "bad/name.txt".into()).is_err());
+        assert!(rename_path(
+            dir.join("missing.txt").to_string_lossy().to_string(),
+            "x.txt".into()
+        )
+        .is_err());
+        // 失败后原文件仍在
+        assert!(src.exists());
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

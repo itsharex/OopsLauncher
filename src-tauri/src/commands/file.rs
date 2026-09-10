@@ -94,6 +94,11 @@ pub fn create_folder(parent_dir: String, folder_name: String) -> Result<String, 
 }
 
 #[tauri::command]
+pub fn rename_path(path: String, new_name: String) -> Result<String, AppError> {
+    services::file_service::rename_path(path, new_name)
+}
+
+#[tauri::command]
 pub fn scan_start_menu_programs(app: tauri::AppHandle) -> Result<Vec<FileInfo>, AppError> {
     services::file_service::scan_start_menu_programs(&app)
 }
