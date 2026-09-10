@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.35
+
+- File explorer: rename files and folders in place — right-click menu item or F2 on the selected item (real disk rename, inline edit with the base name preselected)
+- Reject invalid names before touching the disk (illegal characters, trailing dot/space, Windows reserved device names) and surface conflicts as `「name」已存在`
+- Add Rust unit tests for name validation and real file renaming
+
 ## 0.4.30
 
 - Fix missing Windows MSI in GitHub Release (recursive asset globs, fail loudly on unmatched files)
