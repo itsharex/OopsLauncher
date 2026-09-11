@@ -1,4 +1,5 @@
 // 应用更新检查：启动时查询 GitHub Release，发现新版本则弹窗提示。
+// 同一版本只自动提醒一次（记录持久化在 localStorage），设置页手动检查不受此限制。
 // 状态为模块级单例（与 useFileState 同模式），由 UpdateDialog.vue 消费。
 import { ref } from "vue";
 import { check } from "@tauri-apps/plugin-updater";
@@ -20,18 +21,45 @@ const checking = ref(false);
 let currentUpdate = null;
 let checkedOnce = false;
 
+// 已提示过的版本号持久化在 localStorage（与 oopslauncher_* 前缀约定一致），
+// 保证同一版本跨启动只自动提醒一次，用户忽略后不再重复打扰；新版本号出现时重新提示。
+const NOTIFIED_VERSION_KEY = "oopslauncher_update_notified_version";
+let notifiedVersionCache = null;
+
+const readNotifiedVersion = () => {
+  if (notifiedVersionCache !== null) return notifiedVersionCache;
+  try {
+    notifiedVersionCache = localStorage.getItem(NOTIFIED_VERSION_KEY) || "";
+  } catch (err) {
+    console.error("读取更新提示记录失败:", err);
+    notifiedVersionCache = "";
+  }
+  return notifiedVersionCache;
+};
+
+const markVersionNotified = (version) => {
+  notifiedVersionCache = version || "";
+  try {
+    localStorage.setItem(NOTIFIED_VERSION_KEY, notifiedVersionCache);
+  } catch (err) {
+    console.error("保存更新提示记录失败:", err);
+  }
+};
+
 export function useUpdateChecker() {
-  // 弹出更新确认框（自动 / 手动共用）
+  // 弹出更新确认框（自动 / 手动共用），弹出即记录版本，做到每个版本只提示一次
   const showUpdateDialog = (update) => {
     currentUpdate = update;
     newVersion.value = update.version;
     releaseNotes.value = update.body || "";
     phase.value = "confirm";
     dialogVisible.value = true;
+    markVersionNotified(update.version);
   };
 
   /**
-   * 启动时检查是否有新版本，仅执行一次；失败时静默（无 latest.json 或网络异常不打扰用户）
+   * 启动时检查是否有新版本，仅执行一次；失败时静默（无 latest.json 或网络异常不打扰用户）。
+   * 同一版本只自动提示一次，已提示过的版本直接跳过。
    */
   const checkForUpdate = async () => {
     if (!isTauri() || checkedOnce) return;
@@ -39,6 +67,7 @@ export function useUpdateChecker() {
     try {
       const update = await check();
       if (!update) return;
+      if (update.version === readNotifiedVersion()) return;
       showUpdateDialog(update);
     } catch (err) {
       // 检查失败不打扰用户，仅记录日志

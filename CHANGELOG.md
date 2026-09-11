@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.36
+
+- Update notice: prompt at most once per version — the notified version is persisted (`localStorage.oopslauncher_update_notified_version`) and skipped on later startups; a newer release prompts again
+- Manual "Check for updates" in Settings is not limited by that record and always reports its result
+
 ## 0.4.35
 
 - File explorer: rename files and folders in place — right-click menu item or F2 on the selected item (real disk rename, inline edit with the base name preselected)
