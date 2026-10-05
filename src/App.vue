@@ -265,6 +265,19 @@ onMounted(async () => {
         await appWindow.hide();
       }
 
+      // 监听退出请求
+      await listen("request-exit", async () => {
+        console.log("Received request-exit, saving data...");
+        try {
+          await saveFiles();
+          console.log("Data saved, exiting...");
+        } catch (e) {
+          console.error("Failed to save data during exit:", e);
+        } finally {
+          await invoke("exit_app");
+        }
+      });
+
       // 延迟检查更新，避免影响启动速度
       setTimeout(() => {
         checkForUpdate();
