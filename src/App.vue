@@ -3,6 +3,9 @@
     <!-- 路由视图 -->
     <router-view />
 
+    <!-- 全局搜索遮罩层 -->
+    <SearchOverlay />
+
     <!-- 更新提示弹窗 -->
     <UpdateDialog />
   </div>
@@ -19,6 +22,7 @@ import { useFiles } from "@/composables/useFiles";
 import { listen } from "@tauri-apps/api/event";
 import { ElMessage } from "element-plus";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
+import SearchOverlay from "@/components/SearchOverlay.vue";
 import UpdateDialog from "@/components/UpdateDialog.vue";
 import { useUpdateChecker } from "@/composables/useUpdateChecker";
 import {
